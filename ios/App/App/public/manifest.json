@@ -1,0 +1,24 @@
+{
+  "name": "证件照客服",
+  "short_name": "客服",
+  "description": "证件照伴侣在线客服工作台",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#428eda",
+  "theme_color": "#428eda",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

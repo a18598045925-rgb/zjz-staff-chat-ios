@@ -1,0 +1,15 @@
+{
+  "name": "staff-chat-ios",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "cap:sync": "npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "6.1.2",
+    "@capacitor/ios": "6.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "6.1.2"
+  }
+}

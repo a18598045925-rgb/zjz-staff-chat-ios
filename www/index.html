@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#428eda">
+  <title>证件照客服</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <section id="view-login" class="view">
+      <div class="login-hero">
+        <div class="login-logo">客</div>
+        <h1>客服工作台</h1>
+        <p>安装到手机后可实时接收用户消息</p>
+      </div>
+      <div class="card">
+        <label class="field">
+          <span>服务器</span>
+          <input id="apiBaseInput" type="url" placeholder="http://124.222.45.243:8010/">
+        </label>
+        <label class="field">
+          <span>客服密码</span>
+          <input id="passwordInput" type="password" placeholder="默认 zjz888">
+        </label>
+        <button id="loginBtn" class="btn btn-primary">登录</button>
+        <button id="iosInstallBtn" type="button" class="btn btn-install">iPhone 一键安装（推荐）</button>
+        <p class="hint">个人自用无需 App Store：Safari 打开<br><strong>http://124.222.45.243:8091/staff-app/install/</strong></p>
+      </div>
+    </section>
+
+    <div id="iosGuide" class="guide-mask hidden">
+      <div class="guide-panel">
+        <h3>iPhone 安装步骤</h3>
+        <ol class="guide-steps">
+          <li>必须用 <strong>Safari 浏览器</strong> 打开（微信里点链接无效）</li>
+          <li>地址栏输入：<strong>http://124.222.45.243:8091/staff-app/</strong></li>
+          <li>点底部 <strong>分享</strong> 按钮（方框带向上箭头）</li>
+          <li>向下滑，选 <strong>添加到主屏幕</strong></li>
+          <li>点右上角 <strong>添加</strong>，桌面会出现「客服」图标</li>
+          <li>从桌面图标打开，输入密码 <strong>zjz888</strong> 登录</li>
+        </ol>
+        <p class="guide-note">说明：苹果不允许像安卓那样直接发 .ipa 安装包（需 App Store 或 688 元/年开发者账号）。本方式即为 iOS 官方允许的「网页 App」安装，可实时收消息。</p>
+        <button id="closeGuideBtn" type="button" class="btn btn-primary">我知道了</button>
+      </div>
+    </div>
+
+    <section id="view-list" class="view hidden">
+      <header class="topbar">
+        <h2>会话列表</h2>
+        <span id="wsStatus" class="ws-dot offline"></span>
+      </header>
+      <div class="tabs">
+        <button class="tab active" data-filter="">全部</button>
+        <button class="tab" data-filter="1">待人工</button>
+      </div>
+      <div id="sessionList" class="session-list"></div>
+      <footer class="bottom-bar">
+        <button id="alertToggle" type="button" class="btn btn-ghost active">铃声提醒</button>
+        <button id="dutyToggle" type="button" class="btn btn-ghost">值班常亮</button>
+        <button id="logoutBtn" class="btn btn-ghost">退出</button>
+      </footer>
+    </section>
+
+    <section id="view-chat" class="view hidden">
+      <header class="topbar topbar--chat">
+        <button id="backBtn" class="back-btn">←</button>
+        <h2 id="chatTitle">会话</h2>
+        <span id="wsStatusChat" class="ws-dot offline"></span>
+      </header>
+      <div id="messageList" class="message-list"></div>
+      <footer class="composer">
+        <input id="replyInput" type="text" placeholder="输入回复..." enterkeyhint="send">
+        <button id="sendBtn" class="btn btn-primary btn-send">发送</button>
+      </footer>
+    </section>
+  </div>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js').catch(function () {});
+    }
+  </script>
+</body>
+</html>

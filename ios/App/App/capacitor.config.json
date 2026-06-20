@@ -1,0 +1,13 @@
+{
+	"appId": "com.zjz.staffchat",
+	"appName": "证件照客服",
+	"webDir": "www",
+	"server": {
+		"androidScheme": "https",
+		"iosScheme": "https"
+	},
+	"ios": {
+		"contentInset": "automatic"
+	},
+	"packageClassList": []
+}

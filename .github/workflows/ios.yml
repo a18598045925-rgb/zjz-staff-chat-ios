@@ -1,0 +1,59 @@
+name: Build iOS IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+jobs:
+  build-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: |
+          echo '{"name":"staff-chat-ios","version":"1.0.0","dependencies":{"@capacitor/core":"6.1.2","@capacitor/ios":"6.1.2"},"devDependencies":{"@capacitor/cli":"6.1.2"}}' > package.json
+          npm install --no-audit --no-fund
+          ls -la ios/App/ www/
+
+      - name: Allow HTTP and notifications
+        run: |
+          PLIST=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string fetch" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 证件照客服" "$PLIST" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 证件照客服" "$PLIST"
+
+      - name: Install CocoaPods
+        working-directory: ios/App
+        run: pod install
+
+      - name: Build unsigned App
+        working-directory: ios/App
+        run: |
+          xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            clean build
+
+      - name: Package IPA
+        run: |
+          APP=$(find ios/App/build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+          test -n "$APP" || (echo "No .app found" && find ios/App/build -name "*.app" && exit 1)
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          zip -qr staff-chat.ipa Payload
+          ls -lh staff-chat.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staff-chat-ipa
+          path: staff-chat.ipa
