@@ -41,39 +41,106 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           IOS_UDID: ${{ secrets.IOS_UDID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
         run: |
           set -eo pipefail
           LOG=sign.log
           exec > >(tee -a "$LOG") 2>&1
 
-          test -n "${APPLE_ID:-}" || (echo "Missing secret APPLE_ID" && exit 1)
-          test -n "${APPLE_APP_PASSWORD:-}" || (echo "Missing secret APPLE_APP_PASSWORD" && exit 1)
-          test -n "${IOS_UDID:-}" || (echo "Missing secret IOS_UDID" && exit 1)
+          sign_with_cert() {
+            test -n "${BUILD_CERTIFICATE_BASE64:-}" || return 1
+            test -n "${P12_PASSWORD:-}" || return 1
+            test -n "${BUILD_PROVISION_PROFILE_BASE64:-}" || return 1
+            test -n "${APPLE_TEAM_ID:-}" || return 1
 
-          security create-keychain -p actions build.keychain
-          security default-keychain -s build.keychain
-          security unlock-keychain -p actions build.keychain
-          security set-keychain-settings -t 3600 -u build.keychain
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain || true
+            echo "Using certificate-based signing (offline mode)..."
+            CERT_PATH="$RUNNER_TEMP/build_certificate.p12"
+            PP_PATH="$RUNNER_TEMP/build_pp.mobileprovision"
+            KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+            echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+            echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o "$PP_PATH"
 
-          export FASTLANE_USER="$APPLE_ID"
-          export FASTLANE_PASSWORD="$APPLE_APP_PASSWORD"
-          export FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD="$APPLE_APP_PASSWORD"
-          export FASTLANE_SKIP_UPDATE_CHECK=1
-          export FASTLANE_DISABLE_COLORS=1
-          export SPACESHIP_ONLY_ALLOW_INTERACTIVE_SPACEAUTH=false
+            security create-keychain -p actions "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p actions "$KEYCHAIN_PATH"
+            security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions "$KEYCHAIN_PATH" || true
+            security list-keychain -d user -s "$KEYCHAIN_PATH"
+            mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+            PP_UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /dev/stdin <<< "$(security cms -D -i "$PP_PATH")")
+            export PP_UUID
+            cp "$PP_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PP_UUID}.mobileprovision"
 
-          cat > get_team.rb <<'RB'
-          require 'spaceship'
-          Spaceship::ConnectAPI.login(ENV.fetch('APPLE_ID'), ENV.fetch('APPLE_APP_PASSWORD'))
-          user = Spaceship::ConnectAPI::Users.find(ENV.fetch('APPLE_ID'))
-          teams = user.teams
-          abort('no teams') if teams.nil? || teams.empty?
-          team = teams.find { |t| t.type == 'INDIVIDUAL' } || teams.first
-          puts team.team_id
+            cd ios/App
+            ruby - <<RB
+          path = 'App.xcodeproj/project.pbxproj'
+          text = File.read(path)
+          team = ENV.fetch('APPLE_TEAM_ID')
+          profile = ENV.fetch('PP_UUID')
+          if text.include?('DEVELOPMENT_TEAM')
+            text = text.gsub(/DEVELOPMENT_TEAM = .*?;/, "DEVELOPMENT_TEAM = #{team};")
+            text = text.gsub(/CODE_SIGN_STYLE = Automatic;/, "CODE_SIGN_STYLE = Manual;")
+            unless text.include?('PROVISIONING_PROFILE_SPECIFIER')
+              text = text.gsub(/DEVELOPMENT_TEAM = #{team};/, "DEVELOPMENT_TEAM = #{team};\\n\\t\\t\\t\\tPROVISIONING_PROFILE_SPECIFIER = #{profile};\\n\\t\\t\\t\\tCODE_SIGN_IDENTITY = \"Apple Development\";")
+            end
+          else
+            text = text.gsub(
+              /CODE_SIGN_STYLE = Automatic;/,
+              "CODE_SIGN_STYLE = Manual;\\n\\t\\t\\t\\tDEVELOPMENT_TEAM = #{team};\\n\\t\\t\\t\\tPROVISIONING_PROFILE_SPECIFIER = #{profile};\\n\\t\\t\\t\\tCODE_SIGN_IDENTITY = \"Apple Development\";"
+            )
+          end
+          File.write(path, text)
           RB
 
-          cat > patch_team.rb <<'RB'
+            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              CODE_SIGN_STYLE=Manual \
+              DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+              PROVISIONING_PROFILE_SPECIFIER="$PP_UUID" \
+              CODE_SIGN_IDENTITY="Apple Development" \
+              clean build
+
+            APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+            test -n "$APP"
+            rm -rf ../../Payload && mkdir ../../Payload
+            cp -R "$APP" ../../Payload/
+            cd ../.. && zip -qr staff-chat-signed.ipa Payload
+            cp staff-chat-signed.ipa staff-chat.ipa
+            ls -lh staff-chat-signed.ipa
+          }
+
+          sign_with_apple() {
+            test -n "${APPLE_ID:-}" || (echo "Missing secret APPLE_ID" && exit 1)
+            test -n "${APPLE_APP_PASSWORD:-}" || (echo "Missing secret APPLE_APP_PASSWORD" && exit 1)
+            test -n "${IOS_UDID:-}" || (echo "Missing secret IOS_UDID" && exit 1)
+
+            security create-keychain -p actions build.keychain
+            security default-keychain -s build.keychain
+            security unlock-keychain -p actions build.keychain
+            security set-keychain-settings -t 3600 -u build.keychain
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain || true
+
+            export FASTLANE_USER="$APPLE_ID"
+            export FASTLANE_PASSWORD="$APPLE_APP_PASSWORD"
+            export FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD="$APPLE_APP_PASSWORD"
+            export FASTLANE_SKIP_UPDATE_CHECK=1
+            export FASTLANE_DISABLE_COLORS=1
+            export SPACESHIP_ONLY_ALLOW_INTERACTIVE_SPACEAUTH=false
+
+            cat > get_team.rb <<'RB'
+          require 'spaceship'
+          Spaceship::Portal.login(ENV.fetch('APPLE_ID'), ENV.fetch('APPLE_APP_PASSWORD'))
+          teams = Spaceship::Portal.client.teams
+          abort('no teams') if teams.nil? || teams.empty?
+          team = teams.find { |t| t['type'] == 'Individual' || t['type'] == 'Company/Organization' } || teams.first
+          puts team['teamId']
+          RB
+
+            cat > patch_team.rb <<'RB'
           path = 'App.xcodeproj/project.pbxproj'
           text = File.read(path)
           team = ENV.fetch('TEAM_ID')
@@ -88,60 +155,70 @@ jobs:
           File.write(path, text)
           RB
 
-          TEAM_ID=""
-          for attempt in 1 2 3 4 5 6; do
-            echo "Apple login attempt $attempt..."
-            if TEAM_ID=$(ruby get_team.rb 2>>"$LOG"); then
-              break
+            TEAM_ID="${APPLE_TEAM_ID:-}"
+            if [ -z "$TEAM_ID" ]; then
+              for attempt in 1 2 3 4 5 6; do
+                echo "Apple login attempt $attempt..."
+                if TEAM_ID=$(ruby get_team.rb 2>>"$LOG"); then
+                  break
+                fi
+                ALT=$(xcrun altool --list-providers -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD" 2>>"$LOG" | grep -Eo 'Team ID: [A-Z0-9]+' | head -1 | awk '{print $3}' || true)
+                if [ -n "$ALT" ]; then
+                  TEAM_ID="$ALT"
+                  break
+                fi
+                echo "Apple login failed, retry in 45s..."
+                sleep 45
+              done
             fi
-            ALT=$(xcrun altool --list-providers -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD" 2>>"$LOG" | grep -Eo 'Team ID: [A-Z0-9]+' | head -1 | awk '{print $3}' || true)
-            if [ -n "$ALT" ]; then
-              TEAM_ID="$ALT"
-              break
-            fi
-            echo "Apple login failed, retry in 45s..."
-            sleep 45
-          done
-          test -n "$TEAM_ID" || (echo "Could not get Apple Team ID" && exit 1)
-          echo "TEAM_ID=$TEAM_ID"
-          export TEAM_ID
+            test -n "$TEAM_ID" || (echo "Could not get Apple Team ID. Login https://developer.apple.com/account , accept agreement, then add APPLE_TEAM_ID secret." && exit 1)
+            echo "TEAM_ID=$TEAM_ID"
+            export TEAM_ID
 
-          cd ios/App
-          cp ../../patch_team.rb .
+            cd ios/App
+            cp ../../patch_team.rb .
 
-          for attempt in 1 2 3 4; do
-            echo "Register device attempt $attempt..."
-            if fastlane run register_devices devices:"{StaffPhone:$IOS_UDID}" username:"$APPLE_ID" team_id:"$TEAM_ID"; then
-              break
-            fi
-            echo "register_devices failed, retry in 30s..."
-            sleep 30
-          done
+            for attempt in 1 2 3 4; do
+              echo "Register device attempt $attempt..."
+              if fastlane run register_devices devices:"{StaffPhone:$IOS_UDID}" username:"$APPLE_ID" team_id:"$TEAM_ID"; then
+                break
+              fi
+              echo "register_devices failed, retry in 30s..."
+              sleep 30
+            done
 
-          ruby patch_team.rb
+            ruby patch_team.rb
 
-          for attempt in 1 2 3 4; do
-            echo "xcodebuild attempt $attempt..."
-            if xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
-              -sdk iphoneos -destination 'generic/platform=iOS' \
-              -derivedDataPath build \
-              -allowProvisioningUpdates \
-              CODE_SIGN_STYLE=Automatic \
-              DEVELOPMENT_TEAM="$TEAM_ID" \
-              clean build; then
-              break
-            fi
-            echo "xcodebuild failed, retry in 45s..."
-            sleep 45
-          done
+            for attempt in 1 2 3 4; do
+              echo "xcodebuild attempt $attempt..."
+              if xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+                -sdk iphoneos -destination 'generic/platform=iOS' \
+                -derivedDataPath build \
+                -allowProvisioningUpdates \
+                CODE_SIGN_STYLE=Automatic \
+                DEVELOPMENT_TEAM="$TEAM_ID" \
+                clean build; then
+                break
+              fi
+              echo "xcodebuild failed, retry in 45s..."
+              sleep 45
+            done
 
-          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
-          test -n "$APP" || (echo "No signed .app produced" && exit 1)
-          rm -rf ../../Payload && mkdir ../../Payload
-          cp -R "$APP" ../../Payload/
-          cd ../.. && zip -qr staff-chat-signed.ipa Payload
-          cp staff-chat-signed.ipa staff-chat.ipa
-          ls -lh staff-chat-signed.ipa
+            APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+            test -n "$APP" || (echo "No signed .app produced" && exit 1)
+            rm -rf ../../Payload && mkdir ../../Payload
+            cp -R "$APP" ../../Payload/
+            cd ../.. && zip -qr staff-chat-signed.ipa Payload
+            cp staff-chat-signed.ipa staff-chat.ipa
+            ls -lh staff-chat-signed.ipa
+          }
+
+          if sign_with_cert; then
+            echo "Certificate signing succeeded"
+          else
+            echo "Certificate secrets missing, falling back to Apple ID signing..."
+            sign_with_apple
+          fi
 
       - name: Upload sign log on failure
         if: failure()
