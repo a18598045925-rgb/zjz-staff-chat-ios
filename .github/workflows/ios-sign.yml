@@ -87,6 +87,9 @@ jobs:
           RUBY
 
           cd ios/App
+          fastlane run register_devices devices:"{\"StaffPhone\":\"$IOS_UDID\"}" username:"$APPLE_ID" || true
+          TEAM_ID=$(ruby -e 'require "spaceship"; Spaceship::ConnectAPI.login(ENV["APPLE_ID"], ENV["APPLE_APP_PASSWORD"]); puts Spaceship::ConnectAPI.select_team.team_id' 2>/dev/null || true)
+          echo "TEAM_ID=$TEAM_ID"
           fastlane sign_ci || {
             echo "fastlane failed, trying xcodebuild fallback..."
             xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
@@ -94,6 +97,7 @@ jobs:
               -derivedDataPath build \
               -allowProvisioningUpdates \
               CODE_SIGN_STYLE=Automatic \
+              DEVELOPMENT_TEAM="$TEAM_ID" \
               clean build
             APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
             test -n "$APP"
