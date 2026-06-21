@@ -51,11 +51,12 @@ jobs:
           security default-keychain -s build.keychain
           security unlock-keychain -p actions build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain || true
 
           export FASTLANE_USER="$APPLE_ID"
           export FASTLANE_PASSWORD="$APPLE_APP_PASSWORD"
           export FASTLANE_SKIP_UPDATE_CHECK=1
+          export FASTLANE_DISABLE_COLORS=1
           export SPACESHIP_ONLY_ALLOW_INTERACTIVE_SPACEAUTH=false
 
           mkdir -p ios/App/fastlane
@@ -65,6 +66,12 @@ jobs:
             lane :sign_ci do
               register_devices(
                 devices: { "StaffPhone" => ENV["IOS_UDID"] }
+              )
+              update_code_signing_settings(
+                use_automatic_signing: true,
+                path: "App.xcodeproj",
+                bundle_identifier: "com.zjz.staffchat",
+                code_sign_identity: "Apple Development"
               )
               build_app(
                 workspace: "App.xcworkspace",
@@ -80,7 +87,20 @@ jobs:
           RUBY
 
           cd ios/App
-          fastlane sign_ci
+          fastlane sign_ci || {
+            echo "fastlane failed, trying xcodebuild fallback..."
+            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+              -sdk iphoneos -destination 'generic/platform=iOS' \
+              -derivedDataPath build \
+              -allowProvisioningUpdates \
+              CODE_SIGN_STYLE=Automatic \
+              clean build
+            APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
+            test -n "$APP"
+            rm -rf ../../Payload && mkdir ../../Payload
+            cp -R "$APP" ../../Payload/
+            cd ../.. && zip -qr staff-chat-signed.ipa Payload
+          }
           ls -lh ../../staff-chat-signed.ipa
           cp ../../staff-chat-signed.ipa ../../staff-chat.ipa
 
