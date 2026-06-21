@@ -87,11 +87,17 @@ jobs:
           RUBY
 
           cd ios/App
-          fastlane run register_devices devices:"{\"StaffPhone\":\"$IOS_UDID\"}" username:"$APPLE_ID" || true
-          TEAM_ID=$(ruby -e 'require "spaceship"; Spaceship::ConnectAPI.login(ENV["APPLE_ID"], ENV["APPLE_APP_PASSWORD"]); puts Spaceship::ConnectAPI.select_team.team_id' 2>/dev/null || true)
-          echo "TEAM_ID=$TEAM_ID"
-          fastlane sign_ci || {
+          for attempt in 1 2 3; do
+            if fastlane sign_ci; then
+              break
+            fi
+            echo "fastlane attempt $attempt failed, retry in 30s..."
+            sleep 30
+          done
+          if [ ! -f ../../staff-chat-signed.ipa ]; then
             echo "fastlane failed, trying xcodebuild fallback..."
+            TEAM_ID=$(xcrun altool --list-providers -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD" 2>/dev/null | grep -Eo 'Team ID: [A-Z0-9]+' | head -1 | awk '{print $3}')
+            echo "TEAM_ID=$TEAM_ID"
             xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
               -sdk iphoneos -destination 'generic/platform=iOS' \
               -derivedDataPath build \
@@ -104,7 +110,7 @@ jobs:
             rm -rf ../../Payload && mkdir ../../Payload
             cp -R "$APP" ../../Payload/
             cd ../.. && zip -qr staff-chat-signed.ipa Payload
-          }
+          fi
           ls -lh ../../staff-chat-signed.ipa
           cp ../../staff-chat-signed.ipa ../../staff-chat.ipa
 
