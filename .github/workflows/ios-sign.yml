@@ -42,7 +42,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
           IOS_UDID: ${{ secrets.IOS_UDID }}
         run: |
-          set -euo pipefail
+          set -eo pipefail
           test -n "${APPLE_ID:-}" || (echo "Missing secret APPLE_ID" && exit 1)
           test -n "${APPLE_APP_PASSWORD:-}" || (echo "Missing secret APPLE_APP_PASSWORD" && exit 1)
           test -n "${IOS_UDID:-}" || (echo "Missing secret IOS_UDID" && exit 1)
@@ -55,64 +55,79 @@ jobs:
 
           export FASTLANE_USER="$APPLE_ID"
           export FASTLANE_PASSWORD="$APPLE_APP_PASSWORD"
+          export FASTLANE_APPLE_APPLICATION_SPECIFIC_PASSWORD="$APPLE_APP_PASSWORD"
           export FASTLANE_SKIP_UPDATE_CHECK=1
           export FASTLANE_DISABLE_COLORS=1
           export SPACESHIP_ONLY_ALLOW_INTERACTIVE_SPACEAUTH=false
 
-          mkdir -p ios/App/fastlane
-          cat > ios/App/fastlane/Fastfile <<'RUBY'
-          default_platform(:ios)
-          platform :ios do
-            lane :sign_ci do
-              register_devices(
-                devices: { "StaffPhone" => ENV["IOS_UDID"] }
-              )
-              update_code_signing_settings(
-                use_automatic_signing: true,
-                path: "App.xcodeproj",
-                bundle_identifier: "com.zjz.staffchat",
-                code_sign_identity: "Apple Development"
-              )
-              build_app(
-                workspace: "App.xcworkspace",
-                scheme: "App",
-                configuration: "Release",
-                export_method: "development",
-                output_directory: "../../",
-                output_name: "staff-chat-signed.ipa",
-                xcargs: "-allowProvisioningUpdates"
-              )
-            end
-          end
+          TEAM_ID=""
+          for attempt in 1 2 3 4 5 6; do
+            echo "Apple login attempt $attempt..."
+            if TEAM_ID=$(ruby - <<'RUBY'
+          require 'spaceship'
+          Spaceship::ConnectAPI.login(ENV['APPLE_ID'], ENV['APPLE_APP_PASSWORD'])
+          user = Spaceship::ConnectAPI::Users.find(ENV['APPLE_ID'])
+          teams = user.teams
+          abort 'no teams' if teams.nil? || teams.empty?
+          team = teams.find { |t| t.type == 'INDIVIDUAL' } || teams.first
+          puts team.team_id
           RUBY
-
-          cd ios/App
-          for attempt in 1 2 3; do
-            if fastlane sign_ci; then
+            ); then
               break
             fi
-            echo "fastlane attempt $attempt failed, retry in 30s..."
+            echo "Apple login failed, retry in 45s..."
+            sleep 45
+          done
+          test -n "$TEAM_ID" || (echo "Could not get Apple Team ID" && exit 1)
+          echo "TEAM_ID=$TEAM_ID"
+
+          cd ios/App
+          for attempt in 1 2 3 4; do
+            echo "Register device attempt $attempt..."
+            if fastlane run register_devices devices:"{StaffPhone:$IOS_UDID}" username:"$APPLE_ID" team_id:"$TEAM_ID"; then
+              break
+            fi
+            echo "register_devices failed, retry in 30s..."
             sleep 30
           done
-          if [ ! -f ../../staff-chat-signed.ipa ]; then
-            echo "fastlane failed, trying xcodebuild fallback..."
-            TEAM_ID=$(xcrun altool --list-providers -u "$APPLE_ID" -p "$APPLE_APP_PASSWORD" 2>/dev/null | grep -Eo 'Team ID: [A-Z0-9]+' | head -1 | awk '{print $3}')
-            echo "TEAM_ID=$TEAM_ID"
-            xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
+
+          ruby - <<RUBY
+          path = 'App.xcodeproj/project.pbxproj'
+          text = File.read(path)
+          team = ENV.fetch('TEAM_ID')
+          if text.include?('DEVELOPMENT_TEAM')
+            text = text.gsub(/DEVELOPMENT_TEAM = .*?;/, "DEVELOPMENT_TEAM = \#{team};")
+          else
+            text = text.gsub(
+              /CODE_SIGN_STYLE = Automatic;/,
+              "CODE_SIGN_STYLE = Automatic;\\n\\t\\t\\t\\tDEVELOPMENT_TEAM = \#{team};"
+            )
+          end
+          File.write(path, text)
+          RUBY
+
+          for attempt in 1 2 3 4; do
+            echo "xcodebuild attempt $attempt..."
+            if xcodebuild -workspace App.xcworkspace -scheme App -configuration Release \
               -sdk iphoneos -destination 'generic/platform=iOS' \
               -derivedDataPath build \
               -allowProvisioningUpdates \
               CODE_SIGN_STYLE=Automatic \
               DEVELOPMENT_TEAM="$TEAM_ID" \
-              clean build
-            APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -1)
-            test -n "$APP"
-            rm -rf ../../Payload && mkdir ../../Payload
-            cp -R "$APP" ../../Payload/
-            cd ../.. && zip -qr staff-chat-signed.ipa Payload
-          fi
-          ls -lh ../../staff-chat-signed.ipa
-          cp ../../staff-chat-signed.ipa ../../staff-chat.ipa
+              clean build; then
+              break
+            fi
+            echo "xcodebuild failed, retry in 45s..."
+            sleep 45
+          done
+
+          APP=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          test -n "$APP" || (echo "No signed .app produced" && exit 1)
+          rm -rf ../../Payload && mkdir ../../Payload
+          cp -R "$APP" ../../Payload/
+          cd ../.. && zip -qr staff-chat-signed.ipa Payload
+          cp staff-chat-signed.ipa staff-chat.ipa
+          ls -lh staff-chat-signed.ipa
 
       - uses: actions/upload-artifact@v4
         with:
