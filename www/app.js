@@ -10,12 +10,7 @@
     messages: [],
     ws: null,
     wsTimer: null,
-    pollTimer: null,
-    alertEnabled: localStorage.getItem('staff_alert') !== '0',
-    dutyMode: localStorage.getItem('staff_duty') === '1',
-    wakeLock: null,
-    lastPendingCount: 0,
-    notifyId: 1
+    pollTimer: null
   };
 
   var els = {
@@ -33,103 +28,8 @@
     sendBtn: document.getElementById('sendBtn'),
     backBtn: document.getElementById('backBtn'),
     wsStatus: document.getElementById('wsStatus'),
-    wsStatusChat: document.getElementById('wsStatusChat'),
-    dutyToggle: document.getElementById('dutyToggle'),
-    alertToggle: document.getElementById('alertToggle')
+    wsStatusChat: document.getElementById('wsStatusChat')
   };
-
-  var audioCtx = null;
-
-  function isNative() {
-    return !!(window.Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform());
-  }
-
-  function nativePlugin(name) {
-    return window.Capacitor && Capacitor.Plugins && Capacitor.Plugins[name];
-  }
-
-  function playAlertSound() {
-    if (!state.alertEnabled) return;
-    try {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === 'suspended') audioCtx.resume();
-      for (var i = 0; i < 4; i++) {
-        (function (idx) {
-          setTimeout(function () {
-            var o = audioCtx.createOscillator();
-            var g = audioCtx.createGain();
-            o.type = 'sine';
-            o.frequency.value = idx % 2 ? 988 : 784;
-            g.gain.value = 0.22;
-            o.connect(g);
-            g.connect(audioCtx.destination);
-            o.start();
-            o.stop(audioCtx.currentTime + 0.28);
-          }, idx * 320);
-        })(i);
-      }
-    } catch (e) {}
-  }
-
-  function vibrateStrong() {
-    if (!state.alertEnabled) return;
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
-    var Haptics = nativePlugin('Haptics');
-    if (Haptics && Haptics.impact) {
-      Haptics.impact({ style: 'HEAVY' }).catch(function () {});
-      setTimeout(function () {
-        Haptics.impact({ style: 'HEAVY' }).catch(function () {});
-      }, 300);
-    }
-  }
-
-  async function setupNativeAlerts() {
-    if (!isNative()) return;
-    var LN = nativePlugin('LocalNotifications');
-    if (!LN) return;
-    try {
-      await LN.requestPermissions();
-    } catch (e) {}
-  }
-
-  function nativeNotify(title, body) {
-    if (!state.alertEnabled || !isNative()) return;
-    var LN = nativePlugin('LocalNotifications');
-    if (!LN) return;
-    var id = (state.notifyId++ % 100000) + 1;
-    LN.schedule({
-      notifications: [{
-        id: id,
-        title: title,
-        body: body,
-        sound: 'default',
-        smallIcon: 'ic_stat_icon_config_sample',
-        schedule: { at: new Date(Date.now() + 300) }
-      }]
-    }).catch(function () {});
-  }
-
-  async function setDutyMode(on) {
-    state.dutyMode = !!on;
-    localStorage.setItem('staff_duty', state.dutyMode ? '1' : '0');
-    if (els.dutyToggle) els.dutyToggle.classList.toggle('active', state.dutyMode);
-    if (state.dutyMode && 'wakeLock' in navigator) {
-      try {
-        state.wakeLock = await navigator.wakeLock.request('screen');
-      } catch (e) {}
-    } else if (state.wakeLock) {
-      try { await state.wakeLock.release(); } catch (e) {}
-      state.wakeLock = null;
-    }
-  }
-
-  function alertNewMessage(title, body) {
-    if (!state.alertEnabled) return;
-    playAlertSound();
-    vibrateStrong();
-    notify(title, body);
-    nativeNotify(title, body);
-  }
 
   function apiUrl(path) {
     var base = state.apiBase || '';
@@ -183,14 +83,13 @@
   }
 
   function notify(title, body) {
-    if (!state.alertEnabled || !('Notification' in window)) return;
+    if (!('Notification' in window)) return;
     if (Notification.permission === 'granted') {
-      new Notification(title, { body: body, icon: 'icon-192.png', requireInteraction: true });
+      new Notification(title, { body: body, icon: 'icon-192.png' });
     }
   }
 
   function requestNotifyPermission() {
-    setupNativeAlerts();
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
@@ -250,7 +149,8 @@
       }
       updateSessionPreview(sid, preview);
       if (data.message && data.message.role === 'user') {
-        alertNewMessage('新用户消息', preview);
+        notify('新用户消息', preview);
+        vibrate();
       }
       if (!els.list.classList.contains('hidden')) {
         loadSessions(true);
@@ -262,15 +162,7 @@
   }
 
   function vibrate() {
-    vibrateStrong();
-  }
-
-  function checkPendingAlert(records) {
-    var pending = (records || []).filter(function (s) { return s.humanPending == 1; }).length;
-    if (pending > state.lastPendingCount) {
-      alertNewMessage('待人工会话', '有 ' + pending + ' 个会话等待回复');
-    }
-    state.lastPendingCount = pending;
+    if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
   }
 
   function updateSessionPreview(sessionId, preview) {
@@ -338,7 +230,6 @@
     if (state.filter !== '') payload.humanPending = state.filter;
     return postForm('admin/getServiceChatPage', payload).then(function (data) {
       state.sessions = (data && data.records) || [];
-      checkPendingAlert(state.sessions);
       renderSessions();
     }).catch(function (err) {
       if (!silent) alert(err.message || '加载失败');
@@ -401,12 +292,10 @@
 
   function enterList() {
     showView('list');
-    requestNotifyPermission();
-    if (state.dutyMode) setDutyMode(true);
     loadSessions();
     connectWs();
     clearInterval(state.pollTimer);
-    state.pollTimer = setInterval(function () { loadSessions(true); }, 8000);
+    state.pollTimer = setInterval(function () { loadSessions(true); }, 15000);
   }
 
   function logout() {
@@ -417,21 +306,6 @@
     showView('login');
   }
 
-  if (els.alertToggle) {
-    els.alertToggle.classList.toggle('active', state.alertEnabled);
-    els.alertToggle.onclick = function () {
-      state.alertEnabled = !state.alertEnabled;
-      localStorage.setItem('staff_alert', state.alertEnabled ? '1' : '0');
-      els.alertToggle.classList.toggle('active', state.alertEnabled);
-      if (state.alertEnabled) requestNotifyPermission();
-    };
-  }
-  if (els.dutyToggle) {
-    els.dutyToggle.classList.toggle('active', state.dutyMode);
-    els.dutyToggle.onclick = function () {
-      setDutyMode(!state.dutyMode);
-    };
-  }
   els.apiBaseInput.value = state.apiBase;
   els.loginBtn.onclick = login;
   els.logoutBtn.onclick = logout;

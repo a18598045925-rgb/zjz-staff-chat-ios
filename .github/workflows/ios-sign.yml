@@ -1,0 +1,90 @@
+name: Build and Sign iOS IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build-sign-ipa:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: |
+          echo '{"name":"staff-chat-ios","version":"1.0.0","dependencies":{"@capacitor/core":"6.1.2","@capacitor/ios":"6.1.2"},"devDependencies":{"@capacitor/cli":"6.1.2"}}' > package.json
+          npm install --no-audit --no-fund
+
+      - name: Patch Info.plist
+        run: |
+          PLIST=ios/App/App/Info.plist
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity dict" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :NSAppTransportSecurity:NSAllowsArbitraryLoads bool true" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :NSAppTransportSecurity:NSAllowsArbitraryLoads true" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes array" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :UIBackgroundModes:0 string fetch" "$PLIST" 2>/dev/null || true
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName 证件照客服" "$PLIST" 2>/dev/null || \
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string 证件照客服" "$PLIST"
+
+      - name: Install CocoaPods and Fastlane
+        run: |
+          cd ios/App && pod install
+          gem install fastlane --no-document
+
+      - name: Register device and sign IPA on Apple cloud Mac
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          IOS_UDID: ${{ secrets.IOS_UDID }}
+        run: |
+          set -euo pipefail
+          test -n "${APPLE_ID:-}" || (echo "Missing secret APPLE_ID" && exit 1)
+          test -n "${APPLE_APP_PASSWORD:-}" || (echo "Missing secret APPLE_APP_PASSWORD" && exit 1)
+          test -n "${IOS_UDID:-}" || (echo "Missing secret IOS_UDID" && exit 1)
+
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions build.keychain
+
+          export FASTLANE_USER="$APPLE_ID"
+          export FASTLANE_PASSWORD="$APPLE_APP_PASSWORD"
+          export FASTLANE_SKIP_UPDATE_CHECK=1
+          export SPACESHIP_ONLY_ALLOW_INTERACTIVE_SPACEAUTH=false
+
+          mkdir -p ios/App/fastlane
+          cat > ios/App/fastlane/Fastfile <<'RUBY'
+          default_platform(:ios)
+          platform :ios do
+            lane :sign_ci do
+              register_devices(
+                devices: { "StaffPhone" => ENV["IOS_UDID"] }
+              )
+              build_app(
+                workspace: "App.xcworkspace",
+                scheme: "App",
+                configuration: "Release",
+                export_method: "development",
+                output_directory: "../../",
+                output_name: "staff-chat-signed.ipa",
+                xcargs: "-allowProvisioningUpdates"
+              )
+            end
+          end
+          RUBY
+
+          cd ios/App
+          fastlane sign_ci
+          ls -lh ../../staff-chat-signed.ipa
+          cp ../../staff-chat-signed.ipa ../../staff-chat.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: staff-chat-ipa
+          path: staff-chat.ipa

@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "build": "echo ok",
     "cap:sync": "npx cap sync ios"
   },
   "dependencies": {
+    "@capacitor/android": "^6.1.2",
     "@capacitor/core": "6.1.2",
     "@capacitor/ios": "6.1.2"
   },
